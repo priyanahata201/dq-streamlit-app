@@ -7,7 +7,10 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import LLMChain
 
 # Use Gemini 1.5 Flash
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=st.secrets["GEMINI_API_KEY"])
+llm = ChatGoogleGenerativeAI(
+    model="gemini-1.5-flash",
+    google_api_key=st.secrets["GEMINI_API_KEY"]
+)
 
 # Prompt template to convert English rule into YAML
 template = """
@@ -47,11 +50,12 @@ if uploaded_file:
     if user_rule and st.button("Generate and Apply Rule"):
         with st.spinner("🔧 Generating rule and applying checks..."):
             try:
+                # Run the prompt and get the YAML response
                 yaml_text = chain.run({"input": user_rule})
                 st.subheader("📄 Generated Rule (YAML):")
                 st.code(yaml_text, language="yaml")
 
-                # Remove markdown code block if present
+                # Remove any markdown formatting from the YAML block
                 yaml_text_clean = re.sub(r"```.*?\n(.*?)```", r"\1", yaml_text, flags=re.DOTALL).strip()
 
                 try:
@@ -70,8 +74,13 @@ if uploaded_file:
 
                     try:
                         subset = df.query(condition) if condition else df
+
+                        # Replace 'df' with 'subset' in the check expression
                         check_expr_clean = check_expr.replace("df", "subset")
+
+                        # Evaluate the expression safely
                         validity = eval(check_expr_clean, {"subset": subset, "pd": pd})
+
                         if isinstance(validity, pd.Series):
                             failed_rows = subset[~validity]
                             violations = len(failed_rows)
