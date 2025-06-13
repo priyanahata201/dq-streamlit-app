@@ -70,7 +70,7 @@ if uploaded_file and user_rule:
                 # Step 4: Apply each rule
                 for rule in rules:
                     rule_id = rule.get("rule_id", "unknown_rule")
-                    description = rule.get("description", "")
+                    description = str(rule.get("description", ""))
                     condition = rule.get("condition")
                     check = rule.get("check")
 
