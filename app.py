@@ -70,7 +70,8 @@ if uploaded_file:
 
                     try:
                         subset = df.query(condition) if condition else df
-                        validity = eval(check_expr, {"df": subset, "pd": pd})
+                        check_expr_clean = check_expr.replace("df", "subset")
+                        validity = eval(check_expr_clean, {"subset": subset, "pd": pd})
                         if isinstance(validity, pd.Series):
                             failed_rows = subset[~validity]
                             violations = len(failed_rows)
