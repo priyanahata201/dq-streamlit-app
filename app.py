@@ -67,9 +67,10 @@ if uploaded_file:
                 check_expr = rule["check"]
 
                 try:
+                    validity = eval(check_expr, {"df": df, "pd": pd})
                     subset = df.query(condition) if condition else df
-                    validity = eval(check_expr, {"df": subset, "pd": pd})
-                    failed_rows = subset[~validity] if isinstance(validity, pd.Series) else pd.DataFrame()
+                    failed_rows = subset[~validity.loc[subset.index]] if isinstance(validity, pd.Series) else pd.DataFrame()
+
 
                     violations = len(failed_rows)
                     percent = round((violations / len(df)) * 100, 2) if len(df) else 0.0
