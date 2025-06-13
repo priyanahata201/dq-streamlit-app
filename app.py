@@ -32,8 +32,11 @@ EXAMPLES:
 {input}
 """
 
-prompt = PromptTemplate(template=template, input_variables=["input"])
-chain = LLMChain(llm=llm, prompt=prompt)
+prompt = PromptTemplate(
+    input_variables=["question"],
+    template="Convert this user rule to YAML: {question}"
+)
+
 
 st.title("📊 AI-Driven Data Quality Checker")
 
