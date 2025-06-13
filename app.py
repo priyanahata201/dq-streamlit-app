@@ -2,18 +2,18 @@ import streamlit as st
 import pandas as pd
 import yaml
 import os
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
+import google.generativeai as genai
+from io import StringIO
 
-# Gemini API key from Streamlit Secrets
-google_api_key = st.secrets["GEMINI_API_KEY"]
+# Load Gemini API key from Streamlit secrets
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+model = genai.GenerativeModel("gemini-1.5-flash")
 
-# Gemini LLM (1.5 Flash)
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=google_api_key, temperature=0)
+# Streamlit app title
+st.title("📊 AI-Driven Data Quality Checker (Gemini)")
 
-# Prompt template for rule conversion
-template = """
+# Prompt template
+prompt_template = """
 You are a data quality expert.
 
 Convert the following plain English data quality rule into a YAML-formatted rule for a Python-based data quality engine.
@@ -30,79 +30,68 @@ EXAMPLES:
   condition: "df['KYCType'] == 'IDP6'"
   check: "df['KYCNumber'].astype(str).str.len() == 12"
 
-{question}
+RULE:
+{text}
 """
 
-prompt = PromptTemplate(
-    input_variables=["question"],
-    template=template
-)
-
-chain = LLMChain(llm=llm, prompt=prompt)
-
-# Streamlit UI
-st.set_page_config(page_title="AI Data Quality Checker", layout="wide")
-st.title("📊 AI-Driven Data Quality Checker (Gemini)")
-
-uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
-user_rule = st.text_area("Enter your data quality rule (in English):", height=100)
+# Upload CSV
+uploaded_file = st.file_uploader("Upload CSV dataset", type=["csv"])
+user_rule = st.text_area("Describe your data quality rule (in English):", "")
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
-    st.write("### 🔍 Preview of Uploaded Data")
+    st.write("### Preview of your data:")
     st.dataframe(df)
 
-    if user_rule and st.button("✅ Generate & Apply Rule"):
-        with st.spinner("Generating YAML rule using Gemini..."):
-            yaml_text = chain.run({"question": user_rule})
+    if user_rule and st.button("Generate and Apply Rule"):
+        prompt = prompt_template.format(text=user_rule)
+        response = model.generate_content(prompt)
+        yaml_text = response.text
 
-        st.code(yaml_text, language="yaml")
+        # Clean triple backticks if present
+        yaml_text_clean = yaml_text.strip("` \n")
 
         try:
-            rules = yaml.safe_load(yaml_text)
+            rules = yaml.safe_load(yaml_text_clean)
             if not isinstance(rules, list):
                 rules = [rules]
-        except Exception as e:
-            st.error(f"❌ Failed to parse YAML: {e}")
-            st.stop()
 
-        results_summary = []
+            st.subheader("📄 Generated YAML Rule:")
+            st.code(yaml_text_clean, language="yaml")
 
-        for rule in rules:
-            st.subheader(f"🔎 Rule: {rule.get('rule_id', 'Unnamed')}")
-            try:
+            summary_rows = []
+
+            for rule in rules:
+                rule_id = rule.get("rule_id", "unknown_rule")
+                description = rule.get("description", "")
                 condition = rule.get("condition", None)
                 check_expr = rule["check"]
-                description = rule.get("description", "")
 
-                subset = df.query(condition) if condition else df
-                validity = eval(check_expr, {"df": subset, "pd": pd})
+                try:
+                    subset = df.query(condition) if condition else df
+                    validity = eval(check_expr, {"df": subset, "pd": pd})
+                    if isinstance(validity, pd.Series):
+                        failed_rows = subset[~validity]
+                    else:
+                        failed_rows = subset if not validity else pd.DataFrame(columns=subset.columns)
 
-                if isinstance(validity, pd.Series):
-                    failed_rows = subset[~validity]
-                    violation_count = failed_rows.shape[0]
-                else:
-                    violation_count = 0 if validity else subset.shape[0]
-                    failed_rows = subset if violation_count > 0 else subset[[]]
+                    violations = len(failed_rows)
+                    percent = (violations / len(df)) * 100 if len(df) > 0 else 0.0
 
-                percent = (violation_count / subset.shape[0] * 100) if subset.shape[0] > 0 else 0.0
+                    summary_rows.append({
+                        "rule_id": rule_id,
+                        "description": description,
+                        "violations": violations,
+                        "percentage": round(percent, 2)
+                    })
+                except Exception as e:
+                    st.error(f"⚠️ Error applying rule `{rule_id}`: {e}")
 
-                st.write(f"❌ Failed Rows: {violation_count}")
-                if violation_count > 0:
-                    st.dataframe(failed_rows)
+            if summary_rows:
+                st.write("### ✅ Rule Summary:")
+                st.dataframe(pd.DataFrame(summary_rows))
+            else:
+                st.info("No rules applied or no data.")
 
-                results_summary.append({
-                    "rule_id": rule.get("rule_id", ""),
-                    "description": description,
-                    "violations": violation_count,
-                    "percentage": round(percent, 2)
-                })
-
-            except Exception as e:
-                st.error(f"⚠️ Error applying rule `{rule.get('rule_id', 'unknown')}`: {e}")
-
-        # Display summary table
-        if results_summary:
-            st.markdown("### 📋 Rule Validation Summary")
-            summary_df = pd.DataFrame(results_summary)
-            st.dataframe(summary_df)
+        except Exception as e:
+            st.error(f"❌ Failed to parse YAML: {e}")
