@@ -6,10 +6,11 @@ from langchain.chat_models import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 
-openai_key = st.secrets["API_KEY"]
+# Fetch API key from GitHub environment
+openai_key = os.getenv("API_KEY")
 
+# Initialize LLM
 llm = ChatOpenAI(openai_api_key=openai_key, temperature=0, model="gpt-4")
-
 template = """
 You are a data quality expert.
 
