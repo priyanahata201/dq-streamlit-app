@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import yaml
+import re
 from langchain_core.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import LLMChain
@@ -50,8 +51,11 @@ if uploaded_file:
                 st.subheader("📄 Generated Rule (YAML):")
                 st.code(yaml_text, language="yaml")
 
+                # Remove markdown code block if present
+                yaml_text_clean = re.sub(r"```.*?\n(.*?)```", r"\1", yaml_text, flags=re.DOTALL).strip()
+
                 try:
-                    rules = yaml.safe_load(yaml_text)
+                    rules = yaml.safe_load(yaml_text_clean)
                 except yaml.YAMLError as e:
                     st.error(f"❌ Failed to parse YAML: {e}")
                     rules = []
