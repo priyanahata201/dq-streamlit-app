@@ -1,17 +1,21 @@
 import streamlit as st
 import pandas as pd
 import yaml
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 
-# 1. Load your API key from Streamlit secrets
-openai_key = st.secrets["API_KEY"]
+# Load Gemini API key from Streamlit secrets
+google_api_key = st.secrets["GEMINI_API_KEY"]
 
-# 2. Initialize OpenAI LLM
-llm = ChatOpenAI(openai_api_key=openai_key, temperature=0, model="gpt-3.5-turbo")
+# Initialize Gemini LLM
+llm = ChatGoogleGenerativeAI(
+    google_api_key=google_api_key,
+    model="gemini-pro",
+    temperature=0.3
+)
 
-# 3. Use your full YAML-format prompt template
+# Prompt template for rule generation
 template = """
 You are a data quality expert.
 
@@ -37,11 +41,10 @@ prompt = PromptTemplate(
     template=template
 )
 
-# 4. Create LLMChain
 chain = LLMChain(llm=llm, prompt=prompt)
 
-# 5. Streamlit UI
-st.title("📊 AI-Driven Data Quality Checker")
+# Streamlit UI
+st.title("📊 AI-Driven Data Quality Checker (Gemini)")
 
 uploaded_file = st.file_uploader("Upload CSV dataset", type=["csv"])
 user_rule = st.text_area("Describe your data quality rule (in English):", "")
@@ -53,16 +56,13 @@ if uploaded_file:
 
     if user_rule.strip() and st.button("Generate and Apply Rule"):
         try:
-            # Call LLM
             yaml_text = chain.run({"question": user_rule})
             st.code(yaml_text, language="yaml")
 
-            # Parse YAML
             rules = yaml.safe_load(yaml_text)
             if not isinstance(rules, list):
                 rules = [rules]
 
-            # Apply each rule
             for rule in rules:
                 st.subheader(f"Rule: {rule.get('rule_id', 'Unnamed Rule')}")
                 try:
@@ -71,7 +71,7 @@ if uploaded_file:
 
                     subset = df.query(condition) if condition else df
                     validity = eval(check_expr, {"df": subset, "pd": pd})
-                    
+
                     if isinstance(validity, pd.Series):
                         failed_rows = subset[~validity]
                     else:
@@ -79,9 +79,7 @@ if uploaded_file:
 
                     st.write(f"❌ Failed Rows: {len(failed_rows)}")
                     st.dataframe(failed_rows)
-
                 except Exception as e:
                     st.error(f"⚠️ Error applying rule `{rule.get('rule_id', 'unknown')}`: {e}")
         except Exception as e:
             st.error(f"Error generating or applying rule: {e}")
-
