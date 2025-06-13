@@ -5,3 +5,4 @@ pyyaml
 langchain
 langchain-openai
 openai
+langchain-google-genai
