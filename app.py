@@ -2,89 +2,93 @@ import streamlit as st
 import pandas as pd
 import yaml
 import google.generativeai as genai
+import re
 
 # Load Gemini API key
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+
+# Gemini model
 model = genai.GenerativeModel("gemini-1.5-flash")
 
-# YAML conversion prompt
-GENERATION_PROMPT = """
-You are a data quality expert.
+# Title
+st.title("📊 AI-Powered Data Quality Rule Checker")
 
-Convert the following plain English data quality rule into a YAML-formatted rule.
+uploaded_file = st.file_uploader("Upload your CSV dataset", type=["csv"])
+user_rule = st.text_area("📝 Describe your data quality rule (in plain English):", "")
 
-YAML Format:
+def clean_yaml_response(text):
+    # Remove markdown artifacts like ```yaml or ``` from output
+    return re.sub(r"^```.*?[\r\n]+|```$", "", text.strip(), flags=re.MULTILINE)
+
+def get_yaml_from_gemini(prompt):
+    full_prompt = f"""
+You are a data quality assistant.
+
+Convert the following user input into a Python YAML-based rule format.
+
+Required YAML format:
 - rule_id: <unique_rule_id>
-  description: <detailed_description>
-  condition: <optional pandas query condition>  # optional
-  check: <boolean pandas expression that returns True for valid rows>
+  description: <rule explanation>
+  condition: <pandas query string>  # optional
+  check: <boolean pandas expression using df>
 
-Plain English Rule:
-{user_rule}
+Input:
+{prompt}
+
+Return only valid YAML format.
 """
-
-st.title("📊 AI Data Quality Rule Checker")
-
-uploaded_file = st.file_uploader("Upload your CSV file", type="csv")
-user_rule = st.text_area("Enter a data quality rule in English")
+    response = model.generate_content(full_prompt)
+    return clean_yaml_response(response.text)
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
-    st.write("### Data Preview")
+    st.write("### Preview of your data")
     st.dataframe(df)
 
-    if user_rule and st.button("Generate and Apply Rule"):
-        with st.spinner("Generating YAML rule..."):
-            prompt = GENERATION_PROMPT.format(user_rule=user_rule)
-            response = model.generate_content(prompt)
-            yaml_text = response.text.strip()
-
-            # Clean yaml formatting if markdown artifacts exist
-            if yaml_text.startswith("```"):
-                yaml_text = yaml_text.strip("`").split("yaml")[-1].strip()
-
-            st.code(yaml_text, language="yaml")
-
-        try:
-            rules = yaml.safe_load(yaml_text)
-            if not isinstance(rules, list):
-                rules = [rules]
-
-            results = []
-
-            for rule in rules:
-                rule_id = rule.get("rule_id", "unknown_rule")
-                description = rule.get("description", "")
-                condition = rule.get("condition", None)
-                check_expr = rule.get("check", None)
-
-                if check_expr is None:
-                    st.warning(f"No 'check' found in rule {rule_id}")
-                    continue
-
+    if user_rule and st.button("🚀 Generate and Apply Rule"):
+        with st.spinner("Generating and applying rule..."):
+            try:
+                yaml_text = get_yaml_from_gemini(user_rule)
                 try:
-                    # Evaluate check over full df
-                    validity = eval(check_expr, {"df": df.copy(), "pd": pd})
+                    rules = yaml.safe_load(yaml_text)
+                    if not isinstance(rules, list):
+                        raise ValueError("YAML is not a list of rules.")
+                except Exception as parse_err:
+                    st.error(f"❌ Failed to parse YAML: {parse_err}")
+                    st.code(yaml_text)
+                    rules = []
 
-                    # Apply condition filter
-                    subset = df.query(condition) if condition else df
-                    failed = subset[~validity.loc[subset.index]] if isinstance(validity, pd.Series) else pd.DataFrame()
+                summary_rows = []
 
-                    results.append({
-                        "rule_id": rule_id,
-                        "description": description,
-                        "violations": len(failed),
-                        "percentage": round(len(failed) / len(subset) * 100, 2) if len(subset) > 0 else 0.0
-                    })
+                for rule in rules:
+                    rule_id = rule.get("rule_id", "unknown_rule")
+                    desc = rule.get("description", "")
+                    condition = rule.get("condition", None)
+                    check_expr = rule.get("check", None)
 
-                except Exception as e:
-                    st.error(f"⚠️ Error applying rule `{rule_id}`: {e}")
+                    try:
+                        subset = df.query(condition) if condition else df
+                        validity = eval(check_expr, {"df": subset, "pd": pd})
+                        failed_rows = subset[~validity] if isinstance(validity, pd.Series) else subset if not validity else subset[[]]
 
-            if results:
-                st.write("### ✅ Rule Violation Summary")
-                st.dataframe(pd.DataFrame(results))
-            else:
-                st.warning("No valid rules were applied.")
+                        summary_rows.append({
+                            "rule_id": rule_id,
+                            "description": desc,
+                            "violations": len(failed_rows),
+                            "percentage": round((len(failed_rows) / len(subset)) * 100, 2) if len(subset) > 0 else 0.0
+                        })
 
-        except Exception as e:
-            st.error(f"❌ Failed to parse YAML: {e}")
+                        st.subheader(f"🛠 Rule: {rule_id}")
+                        st.write(desc)
+                        st.write(f"❌ Failed Rows: {len(failed_rows)}")
+                        st.dataframe(failed_rows)
+
+                    except Exception as rule_error:
+                        st.warning(f"⚠️ Error applying rule {rule_id}: {rule_error}")
+
+                if summary_rows:
+                    st.markdown("## ✅ Summary of Results")
+                    st.dataframe(pd.DataFrame(summary_rows))
+
+            except Exception as e:
+                st.error(f"Something went wrong: {e}")
