@@ -4,3 +4,4 @@ openai
 pyyaml
 langchain
 langchain-openai
+openai
