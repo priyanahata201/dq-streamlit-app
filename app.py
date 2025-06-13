@@ -6,13 +6,13 @@ from langchain_core.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import LLMChain
 
-# Initialize LLM
+# Initialize Gemini 1.5 Flash LLM
 llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash",
     google_api_key=st.secrets["GEMINI_API_KEY"]
 )
 
-# Prompt to convert plain English rule into YAML
+# Prompt template for rule conversion
 template = """
 You are a data quality expert.
 
@@ -36,7 +36,7 @@ EXAMPLES:
 prompt = PromptTemplate(input_variables=["input"], template=template)
 chain = LLMChain(llm=llm, prompt=prompt)
 
-# UI
+# Streamlit UI
 st.title("📊 AI-Powered Data Quality Validator")
 uploaded_file = st.file_uploader("Upload your CSV file", type="csv")
 user_rule = st.text_area("Describe your data quality rule (in English):")
@@ -54,8 +54,11 @@ if uploaded_file:
                 st.subheader("🧾 Generated YAML Rule")
                 st.code(yaml_output, language="yaml")
 
-                # Clean markdown formatting if present
-                yaml_clean = re.sub(r"```.*?\n(.*?)```", r"\1", yaml_output, flags=re.DOTALL).strip()
+                # Clean markdown-style formatting if present (e.g., ```yaml ... ```)
+                if "```" in yaml_output:
+                    yaml_clean = re.sub(r"```(?:yaml)?\s*(.*?)```", r"\1", yaml_output, flags=re.DOTALL).strip()
+                else:
+                    yaml_clean = yaml_output.strip()
 
                 try:
                     rules = yaml.safe_load(yaml_clean)
@@ -72,11 +75,13 @@ if uploaded_file:
                     check = rule.get("check")
 
                     try:
-                        # Apply condition if any
+                        # Apply condition if present
                         subset = df.query(condition) if condition else df
 
-                        # Replace 'df' with 'subset' so check works properly
+                        # Replace 'df' with 'subset' for safe evaluation
                         check_expr = check.replace("df", "subset")
+
+                        # Evaluate check expression
                         validity = eval(check_expr, {"subset": subset, "pd": pd})
 
                         if isinstance(validity, pd.Series):
