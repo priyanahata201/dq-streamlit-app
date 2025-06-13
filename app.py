@@ -1,21 +1,17 @@
 import streamlit as st
 import pandas as pd
 import yaml
-import os
 import google.generativeai as genai
-import re
 
 # Load Gemini API key
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel("gemini-1.5-flash")
 
-# Streamlit UI
-st.title("📊 AI-Driven Data Quality Checker (Gemini 1.5 Flash)")
-
-prompt_template = """
+# YAML conversion prompt
+GENERATION_PROMPT = """
 You are a data quality expert.
 
-Convert the following plain English data quality rule into a YAML-formatted rule for a Python-based data quality engine.
+Convert the following plain English data quality rule into a YAML-formatted rule.
 
 YAML Format:
 - rule_id: <unique_rule_id>
@@ -23,74 +19,72 @@ YAML Format:
   condition: <optional pandas query condition>  # optional
   check: <boolean pandas expression that returns True for valid rows>
 
-EXAMPLES:
-- rule_id: dq_kyc_number_length_check
-  description: "If KYCType is IDP6 then KYCNumber length should be 12"
-  condition: "df['KYCType'] == 'IDP6'"
-  check: "df['KYCNumber'].astype(str).str.len() == 12"
-
-RULE:
-{text}
+Plain English Rule:
+{user_rule}
 """
 
-uploaded_file = st.file_uploader("Upload CSV dataset", type=["csv"])
-user_rule = st.text_area("Describe your data quality rule (in English):", "")
+st.title("📊 AI Data Quality Rule Checker")
+
+uploaded_file = st.file_uploader("Upload your CSV file", type="csv")
+user_rule = st.text_area("Enter a data quality rule in English")
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
-    st.write("### Preview of your data:")
+    st.write("### Data Preview")
     st.dataframe(df)
 
     if user_rule and st.button("Generate and Apply Rule"):
-        prompt = prompt_template.format(text=user_rule)
-        response = model.generate_content(prompt)
-        raw_output = response.text.strip()
+        with st.spinner("Generating YAML rule..."):
+            prompt = GENERATION_PROMPT.format(user_rule=user_rule)
+            response = model.generate_content(prompt)
+            yaml_text = response.text.strip()
 
-        # 🔍 Clean out Markdown, triple backticks, and leading junk
-        cleaned_output = re.sub(r"```(?:yaml)?", "", raw_output)
-        cleaned_output = cleaned_output.strip().strip("`")
+            # Clean yaml formatting if markdown artifacts exist
+            if yaml_text.startswith("```"):
+                yaml_text = yaml_text.strip("`").split("yaml")[-1].strip()
+
+            st.code(yaml_text, language="yaml")
 
         try:
-            rules = yaml.safe_load(cleaned_output)
+            rules = yaml.safe_load(yaml_text)
             if not isinstance(rules, list):
                 rules = [rules]
 
-            st.subheader("📄 Generated YAML Rule:")
-            st.code(cleaned_output, language="yaml")
-
-            summary_rows = []
+            results = []
 
             for rule in rules:
                 rule_id = rule.get("rule_id", "unknown_rule")
                 description = rule.get("description", "")
                 condition = rule.get("condition", None)
-                check_expr = rule["check"]
+                check_expr = rule.get("check", None)
+
+                if check_expr is None:
+                    st.warning(f"No 'check' found in rule {rule_id}")
+                    continue
 
                 try:
-                    validity = eval(check_expr, {"df": df, "pd": pd})
+                    # Evaluate check over full df
+                    validity = eval(check_expr, {"df": df.copy(), "pd": pd})
+
+                    # Apply condition filter
                     subset = df.query(condition) if condition else df
-                    failed_rows = subset[~validity.loc[subset.index]] if isinstance(validity, pd.Series) else pd.DataFrame()
+                    failed = subset[~validity.loc[subset.index]] if isinstance(validity, pd.Series) else pd.DataFrame()
 
-
-                    violations = len(failed_rows)
-                    percent = round((violations / len(df)) * 100, 2) if len(df) else 0.0
-
-                    summary_rows.append({
+                    results.append({
                         "rule_id": rule_id,
                         "description": description,
-                        "violations": violations,
-                        "percentage": percent
+                        "violations": len(failed),
+                        "percentage": round(len(failed) / len(subset) * 100, 2) if len(subset) > 0 else 0.0
                     })
 
                 except Exception as e:
                     st.error(f"⚠️ Error applying rule `{rule_id}`: {e}")
 
-            if summary_rows:
-                st.write("### ✅ Rule Summary:")
-                st.dataframe(pd.DataFrame(summary_rows))
+            if results:
+                st.write("### ✅ Rule Violation Summary")
+                st.dataframe(pd.DataFrame(results))
             else:
-                st.info("No valid rules were applied.")
+                st.warning("No valid rules were applied.")
 
         except Exception as e:
             st.error(f"❌ Failed to parse YAML: {e}")
-            st.text_area("Raw Gemini Output (for debugging)", value=raw_output, height=300)
