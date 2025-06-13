@@ -5,17 +5,17 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 
-# Load Gemini API key from Streamlit secrets
+# Load API key from secrets
 google_api_key = st.secrets["GEMINI_API_KEY"]
 
-# Initialize Gemini LLM
+# Initialize Gemini 1.5 Flash via LangChain
 llm = ChatGoogleGenerativeAI(
     google_api_key=google_api_key,
-    model="gemini-pro",
+    model="models/gemini-1.5-flash",
     temperature=0.3
 )
 
-# Prompt template for rule generation
+# Prompt Template
 template = """
 You are a data quality expert.
 
@@ -44,7 +44,7 @@ prompt = PromptTemplate(
 chain = LLMChain(llm=llm, prompt=prompt)
 
 # Streamlit UI
-st.title("📊 AI-Driven Data Quality Checker (Gemini)")
+st.title("📊 AI-Driven Data Quality Checker (Gemini 1.5 Flash)")
 
 uploaded_file = st.file_uploader("Upload CSV dataset", type=["csv"])
 user_rule = st.text_area("Describe your data quality rule (in English):", "")
@@ -82,4 +82,4 @@ if uploaded_file:
                 except Exception as e:
                     st.error(f"⚠️ Error applying rule `{rule.get('rule_id', 'unknown')}`: {e}")
         except Exception as e:
-            st.error(f"Error generating or applying rule: {e}")
+            st.error(f"❌ Error generating or applying rule: {e}")
