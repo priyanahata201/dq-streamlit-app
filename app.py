@@ -6,13 +6,13 @@ from langchain_core.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains import LLMChain
 
-# Use Gemini 1.5 Flash
+# Initialize LLM
 llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash",
     google_api_key=st.secrets["GEMINI_API_KEY"]
 )
 
-# Prompt template to convert English rule into YAML
+# Prompt to convert plain English rule into YAML
 template = """
 You are a data quality expert.
 
@@ -37,10 +37,9 @@ prompt = PromptTemplate(input_variables=["input"], template=template)
 chain = LLMChain(llm=llm, prompt=prompt)
 
 # UI
-st.title("📊 AI-Driven Data Quality Checker (Gemini 1.5 Flash)")
-
-uploaded_file = st.file_uploader("Upload CSV dataset", type=["csv"])
-user_rule = st.text_area("Describe your data quality rule (in English):", "")
+st.title("📊 AI-Powered Data Quality Validator")
+uploaded_file = st.file_uploader("Upload your CSV file", type="csv")
+user_rule = st.text_area("Describe your data quality rule (in English):")
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
@@ -48,20 +47,20 @@ if uploaded_file:
     st.dataframe(df)
 
     if user_rule and st.button("Generate and Apply Rule"):
-        with st.spinner("🔧 Generating rule and applying checks..."):
+        with st.spinner("🧠 Thinking and applying rule..."):
             try:
-                # Run the prompt and get the YAML response
-                yaml_text = chain.run({"input": user_rule})
-                st.subheader("📄 Generated Rule (YAML):")
-                st.code(yaml_text, language="yaml")
+                # Generate YAML rule
+                yaml_output = chain.run({"input": user_rule})
+                st.subheader("🧾 Generated YAML Rule")
+                st.code(yaml_output, language="yaml")
 
-                # Remove any markdown formatting from the YAML block
-                yaml_text_clean = re.sub(r"```.*?\n(.*?)```", r"\1", yaml_text, flags=re.DOTALL).strip()
+                # Clean markdown formatting if present
+                yaml_clean = re.sub(r"```.*?\n(.*?)```", r"\1", yaml_output, flags=re.DOTALL).strip()
 
                 try:
-                    rules = yaml.safe_load(yaml_text_clean)
+                    rules = yaml.safe_load(yaml_clean)
                 except yaml.YAMLError as e:
-                    st.error(f"❌ Failed to parse YAML: {e}")
+                    st.error(f"❌ Invalid YAML: {e}")
                     rules = []
 
                 result_rows = []
@@ -70,40 +69,40 @@ if uploaded_file:
                     rule_id = rule.get("rule_id", "unknown_rule")
                     description = rule.get("description", "")
                     condition = rule.get("condition")
-                    check_expr = rule.get("check")
+                    check = rule.get("check")
 
                     try:
+                        # Apply condition if any
                         subset = df.query(condition) if condition else df
 
-                        # Replace 'df' with 'subset' in the check expression
-                        check_expr_clean = check_expr.replace("df", "subset")
-
-                        # Evaluate the expression safely
-                        validity = eval(check_expr_clean, {"subset": subset, "pd": pd})
+                        # Replace 'df' with 'subset' so check works properly
+                        check_expr = check.replace("df", "subset")
+                        validity = eval(check_expr, {"subset": subset, "pd": pd})
 
                         if isinstance(validity, pd.Series):
-                            failed_rows = subset[~validity]
-                            violations = len(failed_rows)
+                            failed = subset[~validity]
+                            violations = len(failed)
                         else:
                             violations = 0 if validity else len(subset)
 
-                        percentage = round((violations / len(df)) * 100, 2) if len(df) > 0 else 0.0
+                        percent = round((violations / len(df)) * 100, 2) if len(df) > 0 else 0
+
                         result_rows.append({
                             "rule_id": rule_id,
                             "description": description,
                             "violations": violations,
-                            "percentage": percentage
+                            "percentage": percent
                         })
 
                     except Exception as e:
-                        st.warning(f"⚠️ Error applying rule {rule_id}: {e}")
+                        st.warning(f"⚠️ Failed to apply rule {rule_id}: {e}")
 
                 if result_rows:
-                    st.subheader("📊 Rule Results Summary")
+                    st.subheader("📈 Validation Summary")
                     result_df = pd.DataFrame(result_rows)
                     st.dataframe(result_df)
                 else:
-                    st.warning("⚠️ No valid rules were applied.")
+                    st.warning("⚠️ No rules applied successfully.")
 
             except Exception as e:
-                st.error(f"❌ Failed to process rule: {e}")
+                st.error(f"❌ Error: {e}")
