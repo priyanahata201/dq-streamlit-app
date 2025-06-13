@@ -21,14 +21,14 @@ Convert the following plain English data quality rule into a YAML-formatted rule
 YAML Format:
 - rule_id: <unique_rule_id>
   description: <detailed_description>
-  condition: <optional pandas query condition>  # optional
-  check: <boolean pandas expression that returns True for valid rows>
+  condition: <optional pandas query condition>  # optional, column names only (no 'df[...]')
+  check: <boolean pandas expression that returns True for valid rows, column names only>
 
 EXAMPLES:
 - rule_id: dq_kyc_number_length_check
   description: "If KYCType is IDP6 then KYCNumber length should be 12"
-  condition: "df['KYCType'] == 'IDP6'"
-  check: "df['KYCNumber'].astype(str).str.len() == 12"
+  condition: "KYCType == 'IDP6'"
+  check: "KYCNumber.astype(str).str.len() == 12"
 
 {input}
 """
