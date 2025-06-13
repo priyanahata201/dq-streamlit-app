@@ -3,4 +3,4 @@ pandas
 openai
 pyyaml
 langchain
-openai
+langchain-openai
