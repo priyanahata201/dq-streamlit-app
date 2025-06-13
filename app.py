@@ -46,7 +46,7 @@ if uploaded_file:
     st.dataframe(df)
 
     if user_rule and st.button("Generate and Apply Rule"):
-        yaml_text = chain.run(input=user_rule)
+        yaml_text = chain.run({"question": user_rule})
         st.code(yaml_text, language="yaml")
         rules = yaml.safe_load(yaml_text)
         for rule in rules:
