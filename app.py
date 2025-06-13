@@ -10,7 +10,7 @@ from langchain.chains import LLMChain
 openai_key = st.secrets["API_KEY"]
 
 # Use it in ChatOpenAI
-llm = ChatOpenAI(openai_api_key=openai_key, temperature=0, model="gpt-4")
+llm = ChatOpenAI(openai_api_key=openai_key, temperature=0, model="gpt-3.5-turbo")
 
 template = """
 You are a data quality expert.
