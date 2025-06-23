@@ -1,5 +1,4 @@
 pandas
-openai
 pyyaml
 langchain-google-genai
 google-generativeai
