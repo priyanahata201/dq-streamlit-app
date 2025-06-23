@@ -1,9 +1,9 @@
-streamlit
 pandas
 openai
 pyyaml
-langchain
-langchain-openai
-openai
 langchain-google-genai
 google-generativeai
+streamlit>=1.30
+langchain>=0.1.14
+langchain-openai>=0.1.1
+openai
