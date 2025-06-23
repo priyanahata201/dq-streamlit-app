@@ -23,6 +23,9 @@ wheels/
 share/python-wheels/
 *.egg-info/
 .installed.cfg
+
+.streamlit/secrets.toml
+
 *.egg
 MANIFEST
 
