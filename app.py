@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import yaml
 import os
-from langchain.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 
@@ -10,7 +10,7 @@ from langchain.chains import LLMChain
 UPLOAD_DIR = "uploaded_files"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# OpenAI API key from secrets
+# OpenAI API key from Streamlit secrets
 OPENAI_API_KEY = st.secrets["MY_API_KEY"]
 
 # --- Prompt Template for LangChain ---
@@ -52,8 +52,7 @@ prompt = PromptTemplate.from_template(template)
 llm = ChatOpenAI(openai_api_key=OPENAI_API_KEY, temperature=0, model="gpt-4")
 chain = prompt | llm
 
-# --- Functions ---
-
+# --- Utility Functions ---
 def get_yaml_path(csv_filename):
     base_name = os.path.splitext(csv_filename)[0]
     return os.path.join(UPLOAD_DIR, f"{base_name}.yaml")
