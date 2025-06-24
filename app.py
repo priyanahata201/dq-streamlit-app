@@ -6,28 +6,31 @@ import google.generativeai as genai
 import matplotlib.pyplot as plt
 import plotly.express as px
 from sentence_transformers import SentenceTransformer, util
+import streamlit.components.v1 as components
+from ydata_profiling import ProfileReport
 
 # --- Setup ---
 UPLOAD_DIR = "uploaded_files"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Load Gemini API Key from Streamlit secrets
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-
-# Load sentence transformer model
 sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
 
 # --- Prompt Builder ---
-def build_prompt(dq_rule):
+def build_prompt(dq_rule, column_names):
     return f"""
 You are a data quality expert.
-
+ 
 Convert the following plain English data quality rule into a YAML-formatted rule for a Python-based data quality engine.
+ 
+Please use below columns for applyling consition based on if user propmted spelling mistake or blank space between while specifying column name .
+{df.columns}
+Please use simlarity search and use most approipriate column for Rule during check. 
 
 YAML Format:
 - rule_id: <unique_rule_id>
   description: <detailed_description>
-  condition: <optional pandas query condition>  # optional
+  condition: <optional pandas query condition>
   check: <boolean pandas expression that returns True for valid rows>
 
 EXAMPLES :
@@ -53,6 +56,7 @@ Rule:
 
 Return only the YAML block, no explanation.
 """
+
 
 # --- Gemini Call ---
 def generate_yaml_from_gemini(prompt_text):
@@ -83,6 +87,9 @@ def get_combined_text(rule):
     return f"{rule.get('description', '')} {rule.get('condition', '')} {rule.get('check', '')}"
 
 def check_rule_similarity(new_description, existing_rules, threshold=0.8):
+    if not existing_rules:
+        return False  # No rules to compare with, so not a duplicate
+
     input_embedding = sentence_model.encode(new_description, convert_to_tensor=True)
     existing_texts = [get_combined_text(rule) for rule in existing_rules]
     existing_embeddings = sentence_model.encode(existing_texts, convert_to_tensor=True)
@@ -195,8 +202,26 @@ with tab1:
 
 # --- Tab 2: Profiling ---
 with tab2:
-    st.header("Profiling")
-    st.info("Profiling features coming soon.")
+    st.header("Data Profiling Report")
+
+    if df is not None:
+        with st.spinner("Generating profiling report..."):
+            profile = ProfileReport(df, title="Data Profile Report", explorative=True)
+            profile_path = os.path.join(UPLOAD_DIR, "profile_report.html")
+            profile.to_file(profile_path)
+
+            # Display the HTML report
+            with open(profile_path, 'r', encoding='utf-8') as f:
+                html_report = f.read()
+            components.html(html_report, height=1000, scrolling=True)
+
+            # Download option
+            with open(profile_path, "rb") as f:
+                st.download_button("Download Report", f, file_name="data_profile_report.html", mime="text/html")
+    else:
+        st.warning("Please upload a CSV file to view profiling.")
+
+       
 
 # --- Tab 3: Monitoring Rules ---
 with tab3:
@@ -209,7 +234,7 @@ with tab3:
             if st.button("Generate and Add Rule"):
                 if user_rule.strip():
                     with st.spinner("Generating YAML using Gemini..."):
-                        prompt = build_prompt(user_rule)
+                        prompt = build_prompt(user_rule, ", ".join(df.columns))
                         yaml_rule = generate_yaml_from_gemini(prompt)
                         st.code(yaml_rule, language="yaml")
                         success, message = append_rule_to_yaml(yaml_rule, current_csv_name)
@@ -270,20 +295,21 @@ with tab4:
                 color='Status',
                 color_discrete_map={'Valid': 'green', 'Invalid': 'red'},
                 title='Valid vs Invalid Rows',
-                hole=0.4
+                hole=0.4,
+                custom_data=['Status']
             )
-            fig.update_traces(textinfo='label+percent', hoverinfo='label+percent')
-            clicked = st.plotly_chart(fig, use_container_width=True)
+            fig.update_traces(textinfo='label+percent', hoverinfo='label+percent+value')
+            selected_status = st.plotly_chart(fig, use_container_width=True)
 
-            selected_status = st.radio("Show Rules for:", ["All", "Valid", "Invalid"], horizontal=True)
-            if selected_status == "Valid":
-                st.subheader(" Rules with 0 Violations")
+            status_option = st.radio("Show Rules for:", ["All", "Valid", "Invalid"], horizontal=True)
+            if status_option == "Valid":
+                st.subheader("Rules with 0 Violations")
                 st.dataframe(results_df[results_df['violations'] == 0])
-            elif selected_status == "Invalid":
-                st.subheader(" Rules with Violations")
+            elif status_option == "Invalid":
+                st.subheader("Rules with Violations")
                 st.dataframe(results_df[results_df['violations'] > 0])
             else:
-                st.subheader(" All Rule Check Results")
+                st.subheader("All Rule Check Results")
                 st.dataframe(results_df)
         else:
             st.warning("No rules defined to apply.")
