@@ -196,4 +196,13 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Ignore virtual environment
+venv/
+
+# Streamlit secrets
 .streamlit/secrets.toml
+
+# Uploaded & temp files
+uploaded_files/
+profile_report.html
+
