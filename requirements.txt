@@ -1,5 +1,9 @@
 streamlit
 pandas
 pyyaml
-google-cloud-aiplatform
-google-auth
+matplotlib
+google-generativeai
+sentence-transformers
+torch
+plotly
+matplotlib

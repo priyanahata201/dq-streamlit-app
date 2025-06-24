@@ -1,0 +1,12 @@
+- rule_id: dq_kyc_idp8_number_length
+  description: If KYCType is IDP8 then KYCNumber length should be 10
+  condition: df['KYCType'] == 'IDP8'
+  check: df['KYCNumber'].astype(str).str.len() == 10
+- rule_id: dq_kyc_idp10_number_length_check
+  description: If KYCType is IDP10 then KYCNumber length should be 8
+  condition: df['KYCType'] == 'IDP10'
+  check: df['KYCNumber'].astype(str).str.len() == 8
+- rule_id: dq_kyc_number_length_check_2
+  description: If KYCType is IDP6 then KYCNumber length should be 12
+  condition: df['KYCType'] == 'IDP6'
+  check: df['KYCNumber'].astype(str).str.len() == 12
