@@ -8,13 +8,15 @@ import plotly.express as px
 from sentence_transformers import SentenceTransformer, util
 import streamlit.components.v1 as components
 from ydata_profiling import ProfileReport
+import torch
 
 # --- Setup ---
 UPLOAD_DIR = "uploaded_files"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+sentence_model = SentenceTransformer('all-MiniLM-L6-v2', device=device)
 
 # --- Prompt Builder ---
 def build_prompt(dq_rule, column_names):
@@ -23,9 +25,9 @@ You are a data quality expert.
  
 Convert the following plain English data quality rule into a YAML-formatted rule for a Python-based data quality engine.
  
-Please use below columns for applyling consition based on if user propmted spelling mistake or blank space between while specifying column name .
-{df.columns}
-Please use simlarity search and use most approipriate column for Rule during check. 
+Please use below columns for applying condition based on if user prompted spelling mistake or blank space between while specifying column name.
+{column_names}
+Please use similarity search and use most appropriate column for Rule during check.
 
 YAML Format:
 - rule_id: <unique_rule_id>
@@ -57,7 +59,6 @@ Rule:
 Return only the YAML block, no explanation.
 """
 
-
 # --- Gemini Call ---
 def generate_yaml_from_gemini(prompt_text):
     model = genai.GenerativeModel("gemini-1.5-flash")
@@ -86,16 +87,15 @@ def load_rules(csv_filename):
 def get_combined_text(rule):
     return f"{rule.get('description', '')} {rule.get('condition', '')} {rule.get('check', '')}"
 
-def check_rule_similarity(new_description, existing_rules, threshold=0.8):
+def check_rule_similarity(new_description, existing_rules, threshold=0.6):
     if not existing_rules:
-        return False  # No rules to compare with, so not a duplicate
-
+        return False
     input_embedding = sentence_model.encode(new_description, convert_to_tensor=True)
     existing_texts = [get_combined_text(rule) for rule in existing_rules]
     existing_embeddings = sentence_model.encode(existing_texts, convert_to_tensor=True)
     cosine_scores = util.cos_sim(input_embedding, existing_embeddings)[0]
     return any(score >= threshold for score in cosine_scores)
-
+    
 def append_rule_to_yaml(yaml_text, csv_filename):
     path = get_yaml_path(csv_filename)
     try:
@@ -165,153 +165,186 @@ def apply_rules(df, rules):
             })
     return pd.DataFrame(results), all_failed_indices
 
-# --- Streamlit UI ---
+def delete_uploaded_file(filename):
+    csv_path = os.path.join(UPLOAD_DIR, filename)
+    yaml_path = get_yaml_path(filename)
+    if os.path.exists(csv_path):
+        os.remove(csv_path)
+    if os.path.exists(yaml_path):
+        os.remove(yaml_path)
+
+# --- Tab Layout ---
 tab1, tab2, tab3, tab4 = st.tabs(["Data Source", "Profiling", "Monitoring Check", "Data Quality Check"])
 
-# --- Tab 1: Upload CSV ---
+# --- Tab 1: Data Source ---
 with tab1:
-    st.header("Upload CSV Data")
-    uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
-    current_csv_name = None
-    df = None
+    subtab1, subtab2, subtab3 = st.tabs(["Upload File", "Select File", "Delete Files"])
 
-    if uploaded_file is not None:
-        current_csv_name = uploaded_file.name
-        csv_path = os.path.join(UPLOAD_DIR, current_csv_name)
-        with open(csv_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        st.success(f"File '{current_csv_name}' uploaded and saved.")
+    # Load file list initially
+    if "all_files" not in st.session_state:
+        st.session_state["all_files"] = sorted([f for f in os.listdir(UPLOAD_DIR) if f.endswith(".csv")])
 
-    uploaded_files = os.listdir(UPLOAD_DIR)
-    csv_files = [f for f in uploaded_files if f.endswith(".csv")]
+    with subtab1:
+        st.subheader("Upload New CSV")
+        uploaded_file = st.file_uploader("Choose a CSV file", type=["csv"], label_visibility="collapsed")
+        if uploaded_file:
+            save_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
+            with open(save_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            st.session_state["current_csv_name"] = uploaded_file.name
+            st.session_state["all_files"] = sorted([f for f in os.listdir(UPLOAD_DIR) if f.endswith(".csv")])
+            st.success(f"Uploaded and selected `{uploaded_file.name}`.")
 
-    if csv_files:
-        current_csv_name = csv_files[0]
-        csv_path = os.path.join(UPLOAD_DIR, current_csv_name)
-        df = pd.read_csv(csv_path)
-        st.info(f"Loaded file: {current_csv_name}")
-        st.dataframe(df)
+    with subtab2:
+        st.subheader("Uploaded Files")
+        all_files = st.session_state.get("all_files", [])
+        if all_files:
+            selected_file = st.radio("Select a file:", all_files,
+                index=all_files.index(st.session_state.get("current_csv_name"))
+                if "current_csv_name" in st.session_state and st.session_state["current_csv_name"] in all_files else 0)
+            if selected_file:
+                st.session_state["current_csv_name"] = selected_file
+                st.success(f"`{selected_file}` selected.")
+        else:
+            st.info("No uploaded files available.")
 
-        if st.button("Remove Uploaded File"):
-            os.remove(csv_path)
-            st.warning("Uploaded file removed. Refresh to clear view.")
-            current_csv_name = None
-            df = None
-    else:
-        st.warning("No file uploaded.")
+    with subtab3:
+        st.subheader("Delete Files")
+        all_files = st.session_state.get("all_files", [])
+        if all_files:
+            files_to_delete = st.multiselect("Select files to delete:", options=all_files)
+            if files_to_delete:
+                if st.button("Delete Selected Files"):
+                    for file in files_to_delete:
+                        delete_uploaded_file(file)
+                        if st.session_state.get("current_csv_name") == file:
+                            del st.session_state["current_csv_name"]
+                    st.session_state["all_files"] = sorted([f for f in os.listdir(UPLOAD_DIR) if f.endswith(".csv")])
+                    st.success("Selected files and their rule files deleted.")
+        else:
+            st.info("No uploaded files to delete.")
 
 # --- Tab 2: Profiling ---
 with tab2:
     st.header("Data Profiling Report")
+    if "current_csv_name" in st.session_state:
+        current_csv = st.session_state["current_csv_name"]
+        profile_path = os.path.join(UPLOAD_DIR, "profile_report.html")
+        generate_clicked = st.button("Generate Profile")
 
-    if df is not None:
-        with st.spinner("Generating profiling report..."):
-            profile = ProfileReport(df, title="Data Profile Report", explorative=True)
-            profile_path = os.path.join(UPLOAD_DIR, "profile_report.html")
-            profile.to_file(profile_path)
+        if generate_clicked:
+            df = pd.read_csv(os.path.join(UPLOAD_DIR, current_csv))
+            with st.spinner("Generating profiling report..."):
+                profile = ProfileReport(df, title="Data Profile Report", explorative=True)
+                profile.to_file(profile_path)
+                st.session_state["profile_generated"] = True
 
-            # Display the HTML report
+        if st.session_state.get("profile_generated") and os.path.exists(profile_path):
             with open(profile_path, 'r', encoding='utf-8') as f:
                 html_report = f.read()
             components.html(html_report, height=1000, scrolling=True)
-
-            # Download option
             with open(profile_path, "rb") as f:
                 st.download_button("Download Report", f, file_name="data_profile_report.html", mime="text/html")
+        elif not st.session_state.get("profile_generated"):
+            st.info("Click 'Generate Profile' to create a data profiling report.")
     else:
-        st.warning("Please upload a CSV file to view profiling.")
-
-       
+        st.warning("Please select a file from Data Source tab.")
 
 # --- Tab 3: Monitoring Rules ---
 with tab3:
     subtab1, subtab2, subtab3 = st.tabs(["Add", "Update", "Show"])
+    if "current_csv_name" in st.session_state:
+        current_csv = st.session_state["current_csv_name"]
+        df = pd.read_csv(os.path.join(UPLOAD_DIR, current_csv))
 
-    if current_csv_name:
+        # --- Add New Rule ---
         with subtab1:
             st.subheader("Add New Rule")
             user_rule = st.text_input("Enter a rule in plain English:")
             if st.button("Generate and Add Rule"):
                 if user_rule.strip():
-                    with st.spinner("Generating YAML using Gemini..."):
-                        prompt = build_prompt(user_rule, ", ".join(df.columns))
-                        yaml_rule = generate_yaml_from_gemini(prompt)
-                        st.code(yaml_rule, language="yaml")
-                        success, message = append_rule_to_yaml(yaml_rule, current_csv_name)
-                        if success:
-                            st.success(message)
-                        else:
-                            st.error(message)
-                else:
-                    st.warning("Please enter a rule.")
+                    prompt = build_prompt(user_rule, ", ".join(df.columns))
+                    yaml_rule = generate_yaml_from_gemini(prompt)
+                    st.code(yaml_rule, language="yaml")
 
+                    from yaml import safe_load
+                    new_rules = safe_load(yaml_rule)
+                    if not isinstance(new_rules, list):
+                        new_rules = [new_rules]
+                    existing_rules = load_rules(current_csv)
+
+                    duplicate_found = False
+                    for new_rule in new_rules:
+                        new_desc = new_rule.get("description", "")
+                        if check_rule_similarity(new_desc, existing_rules):
+                            st.error("Rule already exists.")
+                            duplicate_found = True
+                            break
+
+                    if not duplicate_found:
+                        all_rules = existing_rules + new_rules
+                        with open(get_yaml_path(current_csv), "w") as f:
+                            yaml.dump(all_rules, f, sort_keys=False)
+                        st.success("Rule added successfully!")
+
+        # --- Delete Existing Rule ---
         with subtab2:
             st.subheader("Delete Existing Rule")
-            existing_rules = load_rules(current_csv_name)
-            rule_ids = [r.get("rule_id") for r in existing_rules]
+            rules = load_rules(current_csv)
+            rule_ids = [r.get("rule_id") for r in rules]
             if rule_ids:
                 selected_rule = st.selectbox("Select a rule to delete", rule_ids)
                 if st.button("Delete Rule"):
-                    success, msg = delete_rule(selected_rule, current_csv_name)
-                    if success:
-                        st.success(msg)
-                    else:
-                        st.error(msg)
+                    new_rules = [r for r in rules if r.get("rule_id") != selected_rule]
+                    with open(get_yaml_path(current_csv), "w") as f:
+                        yaml.dump(new_rules, f, sort_keys=False)
+                    st.success("Rule deleted successfully.")
             else:
                 st.info("No rules available to delete.")
 
+        # --- Show Existing Rules ---
         with subtab3:
             st.subheader("Existing Rules")
-            rules = load_rules(current_csv_name)
+            rules = load_rules(current_csv)
             if rules:
-                simplified = pd.DataFrame([{ "rule_id": r["rule_id"], "description": r["description"] } for r in rules])
-                st.dataframe(simplified)
+                st.dataframe(pd.DataFrame([
+                    {"rule_id": r["rule_id"], "description": r["description"]}
+                    for r in rules
+                ]))
             else:
                 st.info("No rules defined yet.")
     else:
-        st.warning("Upload a CSV file to manage monitoring rules.")
+        st.warning("Please select a file from Data Source tab.")
 
 # --- Tab 4: Data Quality Check ---
 with tab4:
     st.header("Data Quality Check")
-    if current_csv_name and df is not None:
-        rules = load_rules(current_csv_name)
+    if "current_csv_name" in st.session_state:
+        current_csv = st.session_state["current_csv_name"]
+        df = pd.read_csv(os.path.join(UPLOAD_DIR, current_csv))
+        rules = load_rules(current_csv)
         if rules:
             results_df, failed_indices = apply_rules(df, rules)
             total = len(df)
             invalid = len(failed_indices)
             valid = total - invalid
-
             st.subheader("Validation Summary")
             pie_df = pd.DataFrame({
                 'Status': ['Valid', 'Invalid'],
                 'Count': [valid, invalid]
             })
-
-            fig = px.pie(
-                pie_df,
-                names='Status',
-                values='Count',
-                color='Status',
-                color_discrete_map={'Valid': 'green', 'Invalid': 'red'},
-                title='Valid vs Invalid Rows',
-                hole=0.4,
-                custom_data=['Status']
-            )
-            fig.update_traces(textinfo='label+percent', hoverinfo='label+percent+value')
-            selected_status = st.plotly_chart(fig, use_container_width=True)
-
+            fig = px.pie(pie_df, names='Status', values='Count', color='Status',
+                         color_discrete_map={'Valid': 'green', 'Invalid': 'red'},
+                         title='Valid vs Invalid Rows', hole=0.4)
+            st.plotly_chart(fig, use_container_width=True)
             status_option = st.radio("Show Rules for:", ["All", "Valid", "Invalid"], horizontal=True)
             if status_option == "Valid":
-                st.subheader("Rules with 0 Violations")
                 st.dataframe(results_df[results_df['violations'] == 0])
             elif status_option == "Invalid":
-                st.subheader("Rules with Violations")
                 st.dataframe(results_df[results_df['violations'] > 0])
             else:
-                st.subheader("All Rule Check Results")
                 st.dataframe(results_df)
         else:
             st.warning("No rules defined to apply.")
     else:
-        st.warning("Upload a CSV file to perform data quality checks.")
+        st.warning("Please select a file from Data Source tab.")
