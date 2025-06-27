@@ -10,3 +10,12 @@
   description: If KYCType is IDP6 then KYCNumber length should be 12
   condition: df['KYCType'] == 'IDP6'
   check: df['KYCNumber'].astype(str).str.len() == 12
+- rule_id: dq_KYCType_not_null
+  description: KYCType should not be null or empty
+  check: df['KYCType'].notnull() & (df['KYCType'].astype(str).str.strip() != '')
+- rule_id: dq_KYCNumber_non_negative_check
+  description: KYCNumber should be non-negative
+  check: df['KYCNumber'] >= 0
+- rule_id: dq_Date_not_null
+  description: Date should not be null or empty
+  check: df['Date'].notnull() & (df['Date'].astype(str).str.strip() != '')

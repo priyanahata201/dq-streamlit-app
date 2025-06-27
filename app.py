@@ -9,6 +9,7 @@ from sentence_transformers import SentenceTransformer, util
 import streamlit.components.v1 as components
 from ydata_profiling import ProfileReport
 import torch
+import re
 
 # --- Setup ---
 UPLOAD_DIR = "uploaded_files"
@@ -22,12 +23,10 @@ sentence_model = SentenceTransformer('all-MiniLM-L6-v2', device=device)
 def build_prompt(dq_rule, column_names):
     return f"""
 You are a data quality expert.
- 
+
 Convert the following plain English data quality rule into a YAML-formatted rule for a Python-based data quality engine.
- 
-Please use below columns for applying condition based on if user prompted spelling mistake or blank space between while specifying column name.
-{column_names}
-Please use similarity search and use most appropriate column for Rule during check.
+
+Please use below columns for applying condition based on if user prompted spelling mistake or blank space between while specifying column name. {column_names} Please use similarity search and use most appropriate column for Rule during check.
 
 YAML Format:
 - rule_id: <unique_rule_id>
@@ -53,8 +52,7 @@ EXAMPLES :
   description: "Date should be after the year 2020"
   check: "pd.to_datetime(df['Date']).dt.year > 2020"
 
-Rule:
-\"{dq_rule}\"
+Rule: \"{dq_rule}\"
 
 Return only the YAML block, no explanation.
 """
@@ -87,15 +85,24 @@ def load_rules(csv_filename):
 def get_combined_text(rule):
     return f"{rule.get('description', '')} {rule.get('condition', '')} {rule.get('check', '')}"
 
-def check_rule_similarity(new_description, existing_rules, threshold=0.6):
+def check_rule_similarity(new_description, existing_rules, new_check=None, threshold=0.6):
     if not existing_rules:
         return False
     input_embedding = sentence_model.encode(new_description, convert_to_tensor=True)
     existing_texts = [get_combined_text(rule) for rule in existing_rules]
     existing_embeddings = sentence_model.encode(existing_texts, convert_to_tensor=True)
     cosine_scores = util.cos_sim(input_embedding, existing_embeddings)[0]
-    return any(score >= threshold for score in cosine_scores)
-    
+
+    if any(score >= threshold for score in cosine_scores):
+        return True
+
+    if new_check:
+        for rule in existing_rules:
+            if rule.get("check", "").strip() == new_check.strip():
+                return True
+
+    return False
+
 def append_rule_to_yaml(yaml_text, csv_filename):
     path = get_yaml_path(csv_filename)
     try:
@@ -135,35 +142,108 @@ def delete_rule(rule_id, csv_filename):
     except Exception as e:
         return False, f"Error deleting rule: {e}"
 
-def apply_rules(df, rules):
+def extract_column_name(check_expr):
+    """
+    Tries to extract column name from a check expression of form df['colname']
+    """
+    match = re.search(r"df\[['\"]([^'\"]+)['\"]\]", check_expr)
+    if match:
+        return match.group(1)
+    return "Unknown"
+
+def apply_rules(df, rules, dataset_name=None):
     results = []
     local_env = {"df": df, "pd": pd}
     all_failed_indices = set()
+    total_rows = len(df)
 
     for rule in rules:
         try:
             temp_df = df.copy()
-            if "condition" in rule:
+            if "condition" in rule and rule["condition"]:
                 mask = eval(rule["condition"], {}, local_env)
                 temp_df = temp_df[mask]
             check_mask = eval(rule["check"], {}, {"df": temp_df, "pd": pd})
             failed = temp_df[~check_mask]
             all_failed_indices.update(failed.index.tolist())
+
+            num_invalid = len(failed)
+            perc_invalid = round((num_invalid / total_rows) * 100, 2) if total_rows > 0 else 0
+            perc_valid = round(100 - perc_invalid, 2)
+
             results.append({
-                "rule_id": rule["rule_id"],
-                "description": rule["description"],
-                "violations": len(failed),
-                "percentage": round(len(failed) / len(df) * 100, 2)
+                "rule_id": rule.get("rule_id", "unknown"),
+                "description": rule.get("description", ""),
+                "dataset_name": dataset_name or "Unknown",
+                "column_name": extract_column_name(rule.get("check", "")),
+                "num_records_scanned": total_rows,
+                "num_invalid_records": num_invalid,
+                "percentage_invalid": perc_invalid,
+                "percentage_valid": perc_valid
             })
         except Exception as e:
             all_failed_indices.update(df.index.tolist())
             results.append({
                 "rule_id": rule.get("rule_id", "unknown"),
                 "description": f"Error: {str(e)}",
-                "violations": -1,
-                "percentage": 0
+                "dataset_name": dataset_name or "Unknown",
+                "column_name": "Error",
+                "num_records_scanned": total_rows,
+                "num_invalid_records": -1,
+                "percentage_invalid": 0,
+                "percentage_valid": 0
             })
+
     return pd.DataFrame(results), all_failed_indices
+
+def suggest_rules_from_data(df):
+    suggestions = []
+    for col in df.columns:
+        col_lower = col.lower()
+        if pd.api.types.is_numeric_dtype(df[col]):
+            if "age" in col_lower:
+                suggestions.append({
+                    "rule_id": f"dq_{col}_age_min_check",
+                    "description": f"{col} should be greater than 18",
+                    "check": f"df['{col}'] > 18"
+                })
+            elif "salary" in col_lower or "amount" in col_lower:
+                suggestions.append({
+                    "rule_id": f"dq_{col}_positive_check",
+                    "description": f"{col} should be greater than 0",
+                    "check": f"df['{col}'] > 0"
+                })
+            else:
+                suggestions.append({
+                    "rule_id": f"dq_{col}_non_negative_check",
+                    "description": f"{col} should be non-negative",
+                    "check": f"df['{col}'] >= 0"
+                })
+        elif pd.api.types.is_string_dtype(df[col]):
+            suggestions.append({
+                "rule_id": f"dq_{col}_not_null",
+                "description": f"{col} should not be null or empty",
+                "check": f"df['{col}'].notnull() & (df['{col}'].astype(str).str.strip() != '')"
+            })
+        elif pd.api.types.is_datetime64_any_dtype(df[col]):
+            suggestions.append({
+                "rule_id": f"dq_{col}_after_2000",
+                "description": f"{col} should be after 01-01-2000",
+                "check": f"pd.to_datetime(df['{col}']) > pd.to_datetime('2000-01-01')"
+            })
+    return suggestions
+
+# NEW FUNCTION (for requirement 1)
+def suggest_rules_from_profiling(df):
+    suggestions = []
+    for col in df.columns:
+        if df[col].isnull().sum() > 0:
+            suggestions.append({
+                "rule_id": f"dq_{col}_not_null",
+                "description": f"{col} should not be null",
+                "check": f"df['{col}'].notnull()"
+            })
+    return suggestions
 
 def delete_uploaded_file(filename):
     csv_path = os.path.join(UPLOAD_DIR, filename)
@@ -180,7 +260,6 @@ tab1, tab2, tab3, tab4 = st.tabs(["Data Source", "Profiling", "Monitoring Check"
 with tab1:
     subtab1, subtab2, subtab3 = st.tabs(["Upload File", "Select File", "Delete Files"])
 
-    # Load file list initially
     if "all_files" not in st.session_state:
         st.session_state["all_files"] = sorted([f for f in os.listdir(UPLOAD_DIR) if f.endswith(".csv")])
 
@@ -200,8 +279,8 @@ with tab1:
         all_files = st.session_state.get("all_files", [])
         if all_files:
             selected_file = st.radio("Select a file:", all_files,
-                index=all_files.index(st.session_state.get("current_csv_name"))
-                if "current_csv_name" in st.session_state and st.session_state["current_csv_name"] in all_files else 0)
+                                     index=all_files.index(st.session_state.get("current_csv_name"))
+                                     if "current_csv_name" in st.session_state and st.session_state["current_csv_name"] in all_files else 0)
             if selected_file:
                 st.session_state["current_csv_name"] = selected_file
                 st.success(f"`{selected_file}` selected.")
@@ -213,14 +292,13 @@ with tab1:
         all_files = st.session_state.get("all_files", [])
         if all_files:
             files_to_delete = st.multiselect("Select files to delete:", options=all_files)
-            if files_to_delete:
-                if st.button("Delete Selected Files"):
-                    for file in files_to_delete:
-                        delete_uploaded_file(file)
-                        if st.session_state.get("current_csv_name") == file:
-                            del st.session_state["current_csv_name"]
-                    st.session_state["all_files"] = sorted([f for f in os.listdir(UPLOAD_DIR) if f.endswith(".csv")])
-                    st.success("Selected files and their rule files deleted.")
+            if st.button("Delete Selected Files"):
+                for file in files_to_delete:
+                    delete_uploaded_file(file)
+                    if st.session_state.get("current_csv_name") == file:
+                        del st.session_state["current_csv_name"]
+                st.session_state["all_files"] = sorted([f for f in os.listdir(UPLOAD_DIR) if f.endswith(".csv")])
+                st.rerun()  # <<< NEW LINE for requirement 2
         else:
             st.info("No uploaded files to delete.")
 
@@ -249,6 +327,7 @@ with tab2:
             st.info("Click 'Generate Profile' to create a data profiling report.")
     else:
         st.warning("Please select a file from Data Source tab.")
+
 
 # --- Tab 3: Monitoring Rules ---
 with tab3:
@@ -287,6 +366,106 @@ with tab3:
                             yaml.dump(all_rules, f, sort_keys=False)
                         st.success("Rule added successfully!")
 
+            st.markdown("---")
+            st.subheader("Suggested Rules based on Columns")
+            suggested_rules = suggest_rules_from_data(df)
+
+            if suggested_rules:
+                selected_suggestions = []
+                for i, rule in enumerate(suggested_rules):
+                    if st.checkbox(f"{rule['description']}", key=f"suggested_{i}"):
+                        selected_suggestions.append(rule)
+
+                if st.button("Add Selected Suggested Rules"):
+                    existing_rules = load_rules(current_csv)
+                    to_add = []
+                    duplicates = []
+                    for rule in selected_suggestions:
+                        if check_rule_similarity(rule.get("description", ""), existing_rules, rule.get("check", "")):
+                            duplicates.append(rule.get("description", "Unnamed Rule"))
+                        else:
+                            to_add.append(rule)
+                    if to_add:
+                        all_rules = existing_rules + to_add
+                        with open(get_yaml_path(current_csv), "w") as f:
+                            yaml.dump(all_rules, f, sort_keys=False)
+                        st.success("Selected suggested rules added.")
+                    if duplicates:
+                        st.warning("The following rules already exist and were not added:\n" + "\n".join([f"- {desc}" for desc in duplicates]))
+                    if not to_add and not duplicates:
+                        st.info("No new rules to add or all duplicates.")
+
+                if st.button("Add All Suggested Rules"):
+                    existing_rules = load_rules(current_csv)
+                    to_add = []
+                    duplicates = []
+                    for rule in suggested_rules:
+                        if check_rule_similarity(rule.get("description", ""), existing_rules):
+                            duplicates.append(rule.get("description", "Unnamed Rule"))
+                        else:
+                            to_add.append(rule)
+                    if to_add:
+                        all_rules = existing_rules + to_add
+                        with open(get_yaml_path(current_csv), "w") as f:
+                            yaml.dump(all_rules, f, sort_keys=False)
+                        st.success("All suggested rules added.")
+                    if duplicates:
+                        st.warning("The following rules already exist and were not added:\n" + "\n".join([f"- {desc}" for desc in duplicates]))
+                    if not to_add and not duplicates:
+                        st.info("No new rules to add or all duplicates.")
+            else:
+                st.info("No column-based rule suggestions available.")
+
+            st.markdown("---")
+            st.subheader("Suggested Rules based on Profiling")
+            profiling_suggestions = suggest_rules_from_profiling(df)
+
+            if profiling_suggestions:
+                selected_profiling = []
+                for i, rule in enumerate(profiling_suggestions):
+                    if st.checkbox(f"{rule['description']}", key=f"profile_suggested_{i}"):
+                        selected_profiling.append(rule)
+
+                if st.button("Add Selected Profiling Rules"):
+                    existing_rules = load_rules(current_csv)
+                    to_add = []
+                    duplicates = []
+                    for rule in selected_profiling:
+                        if check_rule_similarity(rule.get("description", ""), existing_rules, rule.get("check", "")):
+                            duplicates.append(rule.get("description", "Unnamed Rule"))
+                        else:
+                            to_add.append(rule)
+                    if to_add:
+                        all_rules = existing_rules + to_add
+                        with open(get_yaml_path(current_csv), "w") as f:
+                            yaml.dump(all_rules, f, sort_keys=False)
+                        st.success("Selected profiling rules added.")
+                    if duplicates:
+                        st.warning("The following rules already exist and were not added:\n" + "\n".join([f"- {desc}" for desc in duplicates]))
+                    if not to_add and not duplicates:
+                        st.info("No new rules to add or all duplicates.")
+
+                if st.button("Add All Profiling Rules"):
+                    existing_rules = load_rules(current_csv)
+                    to_add = []
+                    duplicates = []
+                    for rule in profiling_suggestions:
+                        if check_rule_similarity(rule.get("description", ""), existing_rules):
+                            duplicates.append(rule.get("description", "Unnamed Rule"))
+                        else:
+                            to_add.append(rule)
+                    if to_add:
+                        all_rules = existing_rules + to_add
+                        with open(get_yaml_path(current_csv), "w") as f:
+                            yaml.dump(all_rules, f, sort_keys=False)
+                        st.success("All profiling rules added.")
+                    if duplicates:
+                        st.warning("The following rules already exist and were not added:\n" + "\n".join([f"- {desc}" for desc in duplicates]))
+                    if not to_add and not duplicates:
+                        st.info("No new rules to add or all duplicates.")
+            else:
+                st.info("No profiling-based rule suggestions available.")
+
         # --- Delete Existing Rule ---
         with subtab2:
             st.subheader("Delete Existing Rule")
@@ -324,7 +503,7 @@ with tab4:
         df = pd.read_csv(os.path.join(UPLOAD_DIR, current_csv))
         rules = load_rules(current_csv)
         if rules:
-            results_df, failed_indices = apply_rules(df, rules)
+            results_df, failed_indices = apply_rules(df, rules, dataset_name=current_csv)
             total = len(df)
             invalid = len(failed_indices)
             valid = total - invalid
@@ -339,11 +518,28 @@ with tab4:
             st.plotly_chart(fig, use_container_width=True)
             status_option = st.radio("Show Rules for:", ["All", "Valid", "Invalid"], horizontal=True)
             if status_option == "Valid":
-                st.dataframe(results_df[results_df['violations'] == 0])
+                st.dataframe(results_df[results_df['num_invalid_records'] == 0])
             elif status_option == "Invalid":
-                st.dataframe(results_df[results_df['violations'] > 0])
+                st.dataframe(results_df[results_df['num_invalid_records'] > 0])
             else:
                 st.dataframe(results_df)
+
+            # NEW: Bar chart of rules with violations > 0
+            st.subheader("Rules with Violations - Percentage Chart")
+            violated_rules_df = results_df[results_df['num_invalid_records'] > 0]
+            if not violated_rules_df.empty:
+                fig_bar = px.bar(
+                    violated_rules_df,
+                    x='rule_id',
+                    y='percentage_invalid',
+                    title='Violation Percentage by Rule',
+                    labels={'rule_id': 'Rule ID', 'percentage_invalid': 'Violation %'},
+                    color='percentage_invalid',
+                    color_continuous_scale='reds'
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                st.info("No rules with violations to show in bar chart.")
         else:
             st.warning("No rules defined to apply.")
     else:
