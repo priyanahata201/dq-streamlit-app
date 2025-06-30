@@ -466,13 +466,71 @@ with tab3:
             else:
                 st.info("No profiling-based rule suggestions available.")
 
-        # --- Delete Existing Rule ---
+        # --- Update / Delete Existing Rule ---
         with subtab2:
+            st.subheader("Edit Existing Rule Description")
+            rules = load_rules(current_csv)
+            if rules:
+                rule_options = {r.get("rule_id"): r.get("description") for r in rules}
+                selected_rule_id = st.selectbox("Select Rule ID to Edit", list(rule_options.keys()), key="edit_select")
+                current_desc = rule_options.get(selected_rule_id, "")
+                new_desc = st.text_area("Edit Description", value=current_desc, key="edit_text")
+
+                if st.button("Update Rule"):
+                    if not new_desc.strip():
+                        st.error("Description cannot be empty.")
+                    else:
+                        # Delete old rule
+                        updated_rules = [r for r in rules if r.get("rule_id") != selected_rule_id]
+                        with open(get_yaml_path(current_csv), "w") as f:
+                            yaml.dump(updated_rules, f, sort_keys=False)
+
+                        # Use AI to generate new rule
+                        prompt = build_prompt(new_desc, ", ".join(df.columns))
+                        yaml_rule = generate_yaml_from_gemini(prompt)
+                        st.code(yaml_rule, language="yaml")
+
+                        try:
+                            new_rules = yaml.safe_load(yaml_rule)
+                            if not isinstance(new_rules, list):
+                                new_rules = [new_rules]
+                        except yaml.YAMLError:
+                            st.error("Generated YAML is invalid.")
+                            # Restore old rules
+                            with open(get_yaml_path(current_csv), "w") as f:
+                                yaml.dump(rules, f, sort_keys=False)
+                            st.warning("Please correct the description and try again.")
+
+                        # Check for duplicates
+                        duplicate_found = False
+                        for new_rule in new_rules:
+                            new_desc_check = new_rule.get("description", "")
+                            new_check_expr = new_rule.get("check", "")
+                            if check_rule_similarity(new_desc_check, updated_rules, new_check_expr):
+                                duplicate_found = True
+                                break
+
+                        if duplicate_found:
+                            st.error("Duplicate rule exists. Update aborted. No changes made.")
+                            # Restore old rules
+                            with open(get_yaml_path(current_csv), "w") as f:
+                                yaml.dump(rules, f, sort_keys=False)
+                        else:
+                            # Save updated rules with new rule
+                            final_rules = updated_rules + new_rules
+                            with open(get_yaml_path(current_csv), "w") as f:
+                                yaml.dump(final_rules, f, sort_keys=False)
+                            st.success("Rule updated successfully!")
+                            rules = load_rules(current_csv)
+            else:
+                st.info("No rules available to edit.")
+
+            st.markdown("---")
             st.subheader("Delete Existing Rule")
             rules = load_rules(current_csv)
             rule_ids = [r.get("rule_id") for r in rules]
             if rule_ids:
-                selected_rule = st.selectbox("Select a rule to delete", rule_ids)
+                selected_rule = st.selectbox("Select a rule to delete", rule_ids, key="delete_select")
                 if st.button("Delete Rule"):
                     new_rules = [r for r in rules if r.get("rule_id") != selected_rule]
                     with open(get_yaml_path(current_csv), "w") as f:
